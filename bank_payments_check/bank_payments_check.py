@@ -8,7 +8,17 @@ from openpyxl.styles import Border, Side, Alignment, PatternFill, Font
 parser = argparse.ArgumentParser(description='Проверка на плащания по банка')
 parser.add_argument('folder', type=Path, help='Папка с bank.xls, invoices1.xls и invoices2.xls')
 args = parser.parse_args()
-input_folder = args.folder
+input_folder = args.folder.resolve()
+
+required_files = ('bank.xls', 'invoices1.xls', 'invoices2.xls')
+if not input_folder.is_dir():
+    parser.error(f'Input folder does not exist: {input_folder}')
+
+missing_files = [name for name in required_files if not (input_folder / name).is_file()]
+if missing_files:
+    parser.error(
+        f'Missing input file(s) in {input_folder}: {", ".join(missing_files)}'
+    )
 
 # 1. Зареждане на файловете
 bank = pd.read_excel(input_folder / 'bank.xls', header=9)
@@ -35,6 +45,22 @@ inv_date_col = "Дата"
 
 details_col_name = "Банково плащане (Фирма | Дата | Сума | Основание)"
 
+def amount_key(value):
+    amount = pd.to_numeric(value, errors='coerce')
+    if pd.isna(amount):
+        return None
+    return int(round(float(amount) * 100))
+
+def partner_key(value):
+    if pd.isna(value):
+        return ''
+    return str(value).strip().casefold()
+
+def require_columns(frame, file_name, columns):
+    missing = [column for column in columns if column not in frame.columns]
+    if missing:
+        parser.error(f'{file_name} is missing column(s): {", ".join(missing)}')
+
 def format_date(val):
     if pd.isna(val) or not val:
         return ''
@@ -43,8 +69,22 @@ def format_date(val):
         if pd.notna(dt):
             return dt.strftime('%d-%m-%Y')
         return str(val).split(' ')[0]
-    except:
+    except (TypeError, ValueError):
         return str(val).split(' ')[0]
+
+require_columns(
+    bank,
+    'bank.xls',
+    [bank_partner_col, bank_credit_col, bank_date_col, bank_ref_col]
+)
+require_columns(
+    invoices,
+    'invoices1.xls/invoices2.xls',
+    [inv_num_col, inv_partner_col, inv_amount_col, inv_date_col]
+)
+
+bank['_partner_key'] = bank[bank_partner_col].map(partner_key)
+bank['_amount_key'] = bank[bank_credit_col].map(amount_key)
 
 # Извличане на дата за името на изходния файл
 valid_dates = pd.to_datetime(invoices[inv_date_col], dayfirst=True, errors='coerce').dropna()
@@ -52,7 +92,7 @@ date_suffix = valid_dates.iloc[0].strftime('%m_%Y') if not valid_dates.empty els
 output_filename = input_folder / f'Обработени_Фактури_{date_suffix}.xlsx'
 
 # Филтриране на банковите плащания
-bank_credits = bank.dropna(subset=[bank_credit_col]).copy()
+bank_credits = bank[bank['_amount_key'].notna()].copy()
 
 # 2. Филтриране и изчистване на фактурите
 valid_invoices = []
@@ -60,8 +100,9 @@ for _, inv in invoices.iterrows():
     partner_raw = inv.get(inv_partner_col, '')
     partner = str(partner_raw).strip() if pd.notna(partner_raw) else ''
     amount = inv.get(inv_amount_col)
+    normalized_amount = amount_key(amount)
     
-    if not partner or partner.lower() == 'общо' or pd.isna(amount):
+    if not partner or partner.casefold() == 'общо' or normalized_amount is None:
         continue
         
     inv_num = inv.get(inv_num_col, '')
@@ -72,10 +113,15 @@ for _, inv in invoices.iterrows():
         'Фактура': inv_num,
         'Дата': inv_date,
         'Фирма': partner,
-        'Сума за плащане': amount
+        'Сума за плащане': amount,
+        '_partner_key': partner_key(partner),
+        '_amount_key': normalized_amount
     })
 
-inv_df = pd.DataFrame(valid_invoices)
+inv_df = pd.DataFrame(valid_invoices, columns=[
+    'Фактура', 'Дата', 'Фирма', 'Сума за плащане',
+    '_partner_key', '_amount_key'
+])
 
 processed_rows = []
 used_bank_indices = set()
@@ -87,11 +133,10 @@ for idx, row in inv_df.iterrows():
     amount = row['Сума за плащане']
     
     available_bank = bank_credits[~bank_credits.index.isin(used_bank_indices)]
-    bank_partners_clean = available_bank[bank_partner_col].astype(str).str.strip()
     
     exact_match = available_bank[
-        (bank_partners_clean == partner) & 
-        (available_bank[bank_credit_col] == amount)
+        (available_bank['_partner_key'] == row['_partner_key']) &
+        (available_bank['_amount_key'] == row['_amount_key'])
     ]
     
     if not exact_match.empty:
@@ -134,13 +179,17 @@ for row in unmatched_invoices:
     if len(ref_match) == 1:
         matched_b_row = ref_match.iloc[0]
     else:
-        matching_amount_rows = remaining_bank[remaining_bank[bank_credit_col] == amount]
-        competing_inv_count = sum(1 for item in unmatched_invoices if item['Сума за плащане'] == amount)
+        matching_amount_rows = remaining_bank[remaining_bank['_amount_key'] == row['_amount_key']]
+        competing_inv_count = sum(
+            1 for item in unmatched_invoices
+            if item['_amount_key'] == row['_amount_key']
+        )
         
         if len(matching_amount_rows) == 1 and competing_inv_count == 1:
             matched_b_row = matching_amount_rows.iloc[0]
             
     if matched_b_row is not None:
+        used_bank_indices.add(matched_b_row.name)
         b_partner = str(matched_b_row[bank_partner_col]).strip() if pd.notna(matched_b_row[bank_partner_col]) else ''
         b_date = format_date(matched_b_row[bank_date_col])
         b_amount = matched_b_row[bank_credit_col]
@@ -161,9 +210,11 @@ for row in unmatched_invoices:
         details_col_name: details
     })
 
+    remaining_bank = bank_credits[~bank_credits.index.isin(used_bank_indices)]
+
 # Формиране на DataFrames
 cols_order = ['Фактура', 'Дата', 'Фирма', 'Сума за плащане', 'Статус', details_col_name]
-all_df = pd.DataFrame(processed_rows)[cols_order]
+all_df = pd.DataFrame(processed_rows, columns=cols_order)[cols_order]
 
 # Филтриране и сортиране по ДАТА за Sheet 1 ("Неплатени")
 unpaid_df = all_df[all_df['Статус'].isin(['ПРОВЕРИ', 'НЕПЛАТЕНА'])].copy()
