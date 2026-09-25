@@ -1,11 +1,19 @@
-﻿import pandas as pd
+﻿import argparse
+from pathlib import Path
+
+import pandas as pd
 import openpyxl
 from openpyxl.styles import Border, Side, Alignment, PatternFill, Font
 
+parser = argparse.ArgumentParser(description='Проверка на плащания по банка')
+parser.add_argument('folder', type=Path, help='Папка с bank.xls, invoices1.xls и invoices2.xls')
+args = parser.parse_args()
+input_folder = args.folder
+
 # 1. Зареждане на файловете
-bank = pd.read_excel('bank.xls', header=9)
-inv1 = pd.read_excel('invoices1.xls', header=2)
-inv2 = pd.read_excel('invoices2.xls', header=2)
+bank = pd.read_excel(input_folder / 'bank.xls', header=9)
+inv1 = pd.read_excel(input_folder / 'invoices1.xls', header=2)
+inv2 = pd.read_excel(input_folder / 'invoices2.xls', header=2)
 
 # Обединяване на фактурите
 invoices = pd.concat([inv1, inv2], ignore_index=True)
@@ -41,7 +49,7 @@ def format_date(val):
 # Извличане на дата за името на изходния файл
 valid_dates = pd.to_datetime(invoices[inv_date_col], dayfirst=True, errors='coerce').dropna()
 date_suffix = valid_dates.iloc[0].strftime('%m_%Y') if not valid_dates.empty else '01_2026'
-output_filename = f'Обработени_Фактури_{date_suffix}.xlsx'
+output_filename = input_folder / f'Обработени_Фактури_{date_suffix}.xlsx'
 
 # Филтриране на банковите плащания
 bank_credits = bank.dropna(subset=[bank_credit_col]).copy()
