@@ -1,9 +1,8 @@
 ﻿# --- НАСТРОЙКИ ---
-$PSScriptRootPath = "C:\ZOEMTRON\scripts\ka_manager_backup"
-$FileToUpload = "$PSScriptRootPath\test.txt"
+$FileToUpload = Join-Path $PSScriptRoot 'test.txt'
 
-$RclonePath = "$PSScriptRootPath\rclone"
-$ConfigPath = "$RclonePath\config\rclone.conf"
+$RclonePath = Join-Path $PSScriptRoot 'rclone'
+$ConfigPath = Join-Path $RclonePath 'config\rclone.conf'
 
 $Timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $FileNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($FileToUpload)
@@ -17,8 +16,13 @@ Write-Host "Качване на '$NewFileName' файл..." -ForegroundColor Cya
 
 # Изпълнение на rclone командата за качване
 & "$RclonePath\rclone.exe" copyto "$FileToUpload" "$RcloneRemote" --config "$ConfigPath"
-if ($LASTEXITCODE -eq 0) {
+$RcloneExitCode = $LASTEXITCODE
+if ($RcloneExitCode -eq 0) {
     Write-Host "Успех! Файлът е качен в Google Drive." -ForegroundColor Green
 } else {
     Write-Error "Възникна грешка при качването."
+    if ($null -eq $RcloneExitCode) {
+        exit 1
+    }
+    exit $RcloneExitCode
 }
