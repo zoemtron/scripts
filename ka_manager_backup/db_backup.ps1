@@ -13,26 +13,46 @@ $FileExtension = [System.IO.Path]::GetExtension($FileToUpload)
 $NewFileName = "${FileNameWithoutExt}_${Timestamp}${FileExtension}"
 $RcloneRemote = "drive:KA_MANAGER_BACKUP/$NewFileName"
 
-Start-Transcript -Path $LogPath -Append -ErrorAction Stop | Out-Null
-
-try {
-    Write-Host "Качване на '$NewFileName' файл..." -ForegroundColor Cyan
-
-    # Изпълнение на rclone командата за качване
-    & "$RclonePath\rclone.exe" copyto "$FileToUpload" "$RcloneRemote" --config "$ConfigPath"
-    $RcloneExitCode = $LASTEXITCODE
-    if ($RcloneExitCode -eq 0) {
-        Write-Host "Успех! Файлът е качен в Google Drive." -ForegroundColor Green
-    } else {
-        Write-Error "Възникна грешка при качването."
+if (Test-Path $LogPath) {
+    $LogContents = [System.IO.File]::ReadAllText($LogPath)
+    if ($LogContents.Length -gt 0) {
+        $PreviousRuns = @([regex]::Split($LogContents, '(?m)(?=^(?:Windows PowerShell transcript start|========== (?:Upload|Cleanup) run started:))') | Where-Object { $_.Trim().Length -gt 0 })
+        $RetainedRuns = ($PreviousRuns | Select-Object -Last 9) -join ''
+        [System.IO.File]::WriteAllText($LogPath, $RetainedRuns, [System.Text.UTF8Encoding]::new($false))
     }
-} finally {
-    Stop-Transcript | Out-Null
 }
 
-if ($RcloneExitCode -ne 0) {
+function Write-RunLog {
+    param(
+        [string]$Message,
+        [System.ConsoleColor]$Color = [System.ConsoleColor]::Gray
+    )
+
+    Write-Host $Message -ForegroundColor $Color
+    $LogEntry = "[{0}] {1}{2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message, [Environment]::NewLine
+    [System.IO.File]::AppendAllText($LogPath, $LogEntry, [System.Text.UTF8Encoding]::new($false))
+}
+
+$Utf8LogEncoding = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::AppendAllText($LogPath, "========== Upload run started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ==========$([Environment]::NewLine)", $Utf8LogEncoding)
+Write-RunLog -Message "Качване на '$NewFileName' файл..." -Color Cyan
+
+# Изпълнение на rclone командата за качване
+$RcloneOutput = & "$RclonePath\rclone.exe" copyto "$FileToUpload" "$RcloneRemote" --config "$ConfigPath" 2>&1 | ForEach-Object {
+    Write-RunLog -Message ([string]$_)
+}
+$RcloneExitCode = $LASTEXITCODE
+
+if ($RcloneExitCode -eq 0) {
+    Write-RunLog -Message "Успех! Файлът е качен в Google Drive." -Color Green
+} else {
     if ($null -eq $RcloneExitCode) {
-        exit 1
+        $RcloneExitCode = 1
     }
+    Write-RunLog -Message "Възникна грешка при качването." -Color Red
+}
+
+Write-RunLog -Message "Upload run finished (exit code: $RcloneExitCode)."
+if ($RcloneExitCode -ne 0) {
     exit $RcloneExitCode
 }
