@@ -1,5 +1,19 @@
 ﻿# --- НАСТРОЙКИ ---
-$FileToUpload = Join-Path $PSScriptRoot 'test.txt'
+[CmdletBinding()]
+param(
+    [Parameter(Position = 0)]
+    [string]$FileToUpload
+)
+
+if ([string]::IsNullOrWhiteSpace($FileToUpload)) {
+    throw 'A file path parameter is required. Pass the path when running the script, for example: .\db_backup.ps1 "C:\test\abc.txt".'
+}
+
+if (-not (Test-Path -LiteralPath $FileToUpload -PathType Leaf)) {
+    throw "File to upload not found: $FileToUpload"
+}
+
+$FileToUpload = (Resolve-Path -LiteralPath $FileToUpload).Path
 
 $RclonePath = Join-Path $PSScriptRoot 'rclone'
 $ConfigPath = Join-Path $RclonePath 'config\rclone.conf'

@@ -1,4 +1,10 @@
 ﻿# Път до rclone и конфигурацията
+[CmdletBinding()]
+param(
+    [ValidateRange(1, 36500)]
+    [int]$RetentionDays = 10
+)
+
 $RclonePath = Join-Path $PSScriptRoot 'rclone'
 $ConfigPath = Join-Path $RclonePath 'config\rclone.conf'
 $LogPath = Join-Path $PSScriptRoot 'backup.log'
@@ -26,10 +32,37 @@ function Write-RunLog {
 
 $Utf8LogEncoding = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::AppendAllText($LogPath, "========== Cleanup run started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ==========$([Environment]::NewLine)", $Utf8LogEncoding)
-Write-RunLog -Message "Стартиране на почистването на архивни файлове по-стари от 10 дни в $RemoteTarget..." -Color Cyan
+Write-RunLog -Message "Стартиране на почистването на архивни файлове по-стари от $RetentionDays дни в $RemoteTarget..." -Color Cyan
 
-# Изпълнение на rclone delete с ограничение --min-age 10d
-$RcloneOutput = & "$RclonePath\rclone.exe" delete $RemoteTarget --min-age 10d --config $ConfigPath -v 2>&1 | ForEach-Object {
+$CountOutput = & "$RclonePath\rclone.exe" size $RemoteTarget --json --config $ConfigPath 2>&1
+
+try {
+    $CountInfo = ConvertFrom-Json -InputObject ($CountOutput -join [Environment]::NewLine) -ErrorAction Stop
+    if ($null -eq $CountInfo.PSObject.Properties['count']) {
+        throw 'The count is missing from rclone output.'
+    }
+    $BackupCount = [long]$CountInfo.count
+    if ($BackupCount -lt 0) {
+        throw 'Invalid file count.'
+    }
+} catch {
+    foreach ($Line in $CountOutput) {
+        Write-RunLog -Message ([string]$Line)
+    }
+    Write-RunLog -Message "Грешка при преброяването на резервните копия. Няма да бъдат изтрити файлове." -Color Red
+    Write-RunLog -Message "Cleanup run finished (exit code: 1)."
+    exit 1
+}
+
+Write-RunLog -Message "Намерени файлове: $BackupCount."
+if ($BackupCount -lt $RetentionDays) {
+    Write-RunLog -Message "Файловете са по-малко от $RetentionDays; няма да бъдат изтрити файлове." -Color Green
+    Write-RunLog -Message "Cleanup run finished (exit code: 0)."
+    exit 0
+}
+
+# Изпълнение на rclone delete с ограничение по броя дни за съхранение
+$RcloneOutput = & "$RclonePath\rclone.exe" delete $RemoteTarget --min-age "${RetentionDays}d" --config $ConfigPath -v 2>&1 | ForEach-Object {
     Write-RunLog -Message ([string]$_)
 }
 $RcloneExitCode = $LASTEXITCODE
